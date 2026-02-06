@@ -4,7 +4,7 @@ A lightweight, high-performance circular camera overlay for macOS. Perfect for t
 
 ## Features
 - **Circular Mask**: No black corners, perfect circle.
-- **Background Removal**: Automatically removes your messy background using AI (MediaPipe).
+- **Background Removal**: Automatically removes your background using AI (MediaPipe) with smooth, feathered edges via confidence masks and premultiplied alpha.
 - **Mirrored View**: Acts like a natural mirror.
 - **Always on Top**: Floats above all windows (VS Code, browser, etc.).
 - **Draggable**: Click and drag anywhere on the camera feed to move it.

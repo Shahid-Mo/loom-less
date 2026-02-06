@@ -23,7 +23,7 @@ class CircularCamera(QWidget):
         super().__init__()
 
         # --- CONFIGURATION ---
-        self.window_size = 300 
+        self.window_size = 250 
         self.fps = 60
         self.model_path = 'selfie_segmenter.task'
         self.use_mediapipe = False
@@ -35,7 +35,8 @@ class CircularCamera(QWidget):
                 options = vision.ImageSegmenterOptions(
                     base_options=base_options,
                     running_mode=vision.RunningMode.VIDEO,
-                    output_category_mask=True
+                    output_category_mask=False,
+                    output_confidence_masks=True
                 )
                 self.segmenter = vision.ImageSegmenter.create_from_options(options)
                 self.use_mediapipe = True
@@ -103,44 +104,43 @@ class CircularCamera(QWidget):
                     timestamp_ms = int(time.time() * 1000)
                     result = self.segmenter.segment_for_video(mp_image, timestamp_ms)
                     
-                    # Extract mask
-                    category_mask = result.category_mask.numpy_view()
-                    
+                    # Extract confidence mask (soft probabilities 0.0-1.0)
+                    # Index 0 = background, index 1 = person (if available)
+                    confidence_masks = result.confidence_masks
+                    if len(confidence_masks) > 1:
+                        person_mask = confidence_masks[1].numpy_view()
+                    else:
+                        person_mask = confidence_masks[0].numpy_view()
+
                     # Convert frame to RGBA
                     frame_rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
-                    
-                    # Apply mask
-                    # The user reported the previous logic inverted them (Person=Transparent, Bg=Solid).
-                    # So we invert the condition.
-                    # If category_mask contains 0 and 1, we want 255 (Visible) for the Person.
-                    # We'll try explicitly selecting the index for "Person" which we assume is what was missing.
-                    # If previous was (mask > 0.5) -> Person Transparent, then Person must be 0?
-                    # Let's try inverting: 
-                    is_person = category_mask > 0.5 
-                    # If the user said they were transparent, then `is_person` calculated above was resulting in 0 for them.
-                    # This means category_mask was <= 0.5 for them.
-                    # So we'll invert the logic:
-                    mask = (category_mask <= 0.5).astype(np.uint8) * 255
-                    
-                    # Alternatively, if we just want to flip whatever it was doing:
-                    # mask = cv2.bitwise_not(mask) 
-                    
-                    # However, let's stick to the inverted comparison for clarity.
-                    # Let's actually assume standard behavior: 0=Background, 1=Person.
-                    # If that's true, (mask > 0.5) should have worked.
-                    # Since it didn't, maybe 0=Person, 1=Background?
-                    # So we use <= 0.5 to select Person (0).
-                    
-                    mask = (category_mask <= 0.5).astype(np.uint8) * 255
-                    
-                    # Smoothing the mask slightly
-                    mask = cv2.GaussianBlur(mask, (5, 5), 0)
-                    
+
+                    # Smooth the soft mask for clean edges
+                    mask_u8 = (person_mask * 255).astype(np.uint8)
+
+                    # 1. Threshold to get a solid core mask
+                    _, solid = cv2.threshold(mask_u8, 128, 255, cv2.THRESH_BINARY)
+
+                    # 2. Light erode to trim outermost fringe
+                    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                    solid = cv2.erode(solid, erode_kernel, iterations=1)
+
+                    # 3. Close small holes (hair strands)
+                    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, close_kernel)
+
+                    # 4. Blur for feathered edges
+                    mask = cv2.GaussianBlur(solid, (11, 11), 3)
+
+                    # 5. Premultiply RGB by alpha to avoid bg-color halo
+                    alpha_f = mask.astype(np.float32) / 255.0
+                    for c in range(3):
+                        frame_rgba[:, :, c] = (frame_rgba[:, :, c].astype(np.float32) * alpha_f).astype(np.uint8)
                     frame_rgba[:, :, 3] = mask
                     
                     h, w, ch = frame_rgba.shape
                     bytes_per_line = ch * w
-                    image = QImage(frame_rgba.data, w, h, bytes_per_line, QImage.Format_RGBA8888).copy()
+                    image = QImage(frame_rgba.data, w, h, bytes_per_line, QImage.Format_RGBA8888_Premultiplied).copy()
                     self.current_frame = image
                 except Exception as e:
                     print(f"MediaPipe Runtime Error: {e}")
